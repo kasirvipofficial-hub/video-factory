@@ -22,6 +22,15 @@ process.on('uncaughtException', (error) => {
 type JobMode = 'auto' | 'discover_only' | 'produce';
 type SelectionPolicy = 'top1' | 'wait_user' | 'all' | 'auto_best';
 
+function getPublicBaseUrl(req: express.Request): string {
+    const forwardedProto = (req.header('X-Forwarded-Proto') || '').split(',')[0].trim();
+    const forwardedHost = (req.header('X-Forwarded-Host') || '').split(',')[0].trim();
+    const host = forwardedHost || (req.header('Host') || `localhost:${ENV.PORT}`).trim();
+    const proto = forwardedProto || req.protocol || 'http';
+
+    return `${proto}://${host}`;
+}
+
 function getTenantId(req: express.Request): string {
     return (req.header('X-Tenant-Id') || ENV.DEFAULT_TENANT_ID).trim();
 }
@@ -79,7 +88,7 @@ async function createJobFromRequest(
         customization?: unknown;
         webhook?: unknown;
     },
-    port: number
+    baseUrl: string
 ): Promise<{ statusCode: number; body: Record<string, unknown> }> {
     const tenantId = request.tenantId;
     const idempotencyKey = request.idempotencyKey;
@@ -108,7 +117,8 @@ async function createJobFromRequest(
                     deduped: true,
                     reason: 'idempotency_key',
                     jobId: idemJob.jobId,
-                    statusUrl: `http://localhost:${port}/api/v1/jobs/${idemJob.jobId}`
+                    statusUrl: `${baseUrl}/api/v1/jobs/${idemJob.jobId}`,
+                    outputUrl: `${baseUrl}/api/v1/jobs/${idemJob.jobId}/output`
                 }
             };
         }
@@ -127,7 +137,8 @@ async function createJobFromRequest(
                 deduped: true,
                 reason: 'active_source_url',
                 jobId: activeJob.jobId,
-                statusUrl: `http://localhost:${port}/api/v1/jobs/${activeJob.jobId}`
+                statusUrl: `${baseUrl}/api/v1/jobs/${activeJob.jobId}`,
+                outputUrl: `${baseUrl}/api/v1/jobs/${activeJob.jobId}/output`
             }
         };
     }
@@ -172,7 +183,8 @@ async function createJobFromRequest(
         body: {
             success: true,
             jobId,
-            statusUrl: `http://localhost:${port}/api/v1/jobs/${jobId}`
+            statusUrl: `${baseUrl}/api/v1/jobs/${jobId}`,
+            outputUrl: `${baseUrl}/api/v1/jobs/${jobId}/output`
         }
     };
 }
@@ -191,7 +203,7 @@ app.post('/api/v1/jobs', async (req, res) => {
             customization: req.body?.customization,
             webhook: req.body?.webhook
         },
-        ENV.PORT
+        getPublicBaseUrl(req)
     );
 
     return res.status(result.statusCode).json(result.body);
@@ -331,7 +343,7 @@ app.post('/api/clip', async (req, res) => {
             customization: req.body?.customization,
             webhook: req.body?.webhookUrl ? { url: req.body.webhookUrl } : undefined
         },
-        ENV.PORT
+        getPublicBaseUrl(req)
     );
 
     return res.status(result.statusCode).json(result.body);
@@ -351,7 +363,7 @@ app.get('/api/clip', async (req, res) => {
             customization: req.query.customization,
             webhook: req.query.webhookUrl ? { url: req.query.webhookUrl as string } : undefined
         },
-        ENV.PORT
+        getPublicBaseUrl(req)
     );
 
     return res.status(result.statusCode).json(result.body);
