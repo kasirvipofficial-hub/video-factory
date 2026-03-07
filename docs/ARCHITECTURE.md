@@ -1,198 +1,140 @@
-# 🎬 Clipper - Architecture Overview
+# Clipper Architecture
 
-## Current Pipeline Architecture
+Dokumen ini menjelaskan arsitektur aktif yang sekarang digunakan oleh repo.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         REST API Server                          │
-│                       (Express.js Port 8080)                     │
-└────────────────────┬────────────────────────────────────────────┘
-                     │
-                     ▼
-        ┌────────────────────────────┐
-        │   API Endpoints            │
-        │ • POST /api/clip           │
-        │ • GET /api/status/:jobId   │
-        │ • GET /api/health (TODO)   │
-        └────────────────────────────┘
-                     │
-                     ▼
-        ┌────────────────────────────────────────────┐
-        │      JobManager (In-Memory Queue)          │
-        │  • Job creation & tracking                 │
-        │  • Status updates                          │
-        │  • Progress tracking (0-100%)              │
-        └────────────────────────────────────────────┘
-                     │
-                     ▼
-        ┌────────────────────────────────────────────┐
-        │    Orchestrator Service (Main Pipeline)    │
-        └────────────────────────────────────────────┘
-                     │
-        ┌────────────┼────────────┬────────────┬─────────┐
-        │            │            │            │         │
-        ▼            ▼            ▼            ▼         ▼
-    [1]         [2]          [3]         [4]        [5]
-  YouTube    FFmpeg        Whisper      AI         Subtitle
-  Service    Service       Service      Analyzer   Service
-    │            │            │            │         │
-    │            │           ❌️           ❌️        │
-    ▼            ▼    (401 Error)  (401 Error)   ▼
-  video.mp4  audio.mp3                    highlights  subtitles.ass
-    │                                       │         │
-    │                                       ▼         │
-    │                                    FFmpeg      │
-    │                                    (Cut)       │
-    │                                       │         │
-    ▼                                       ▼         ▼
-  ┌────────────────────────────────────────────────────────┐
-  │              [6] FFmpeg Concat Service                  │
-  │         • Join highlight segments                      │
-  │         • Apply color grading                          │
-  └────────────────────────────────────────────────────────┘
-                     │
-        ┌────────────┴────────────┐
-        │                         │
-        ▼                         ▼
-    [7] TTS Service          [8] Rendering
-   (Generate Voice)        (libx264 + AAC)
-   ❌️ (Broken)              ✅ (Working)
-        │                         │
-        └────────────┬────────────┘
-                     │
-                     ▼
-        ┌────────────────────────────────┐
-        │   [9] Thumbnail Generation     │
-        │        (1-second JPEG)         │
-        │        ✅ (Working)            │
-        └────────────────────────────────┘
-                     │
-                     ▼
-        ┌────────────────────────────────┐
-        │    [10] Output Management      │
-        │  • Save video (21.6MB)         │
-        │  • Save thumbnail (89KB)       │
-        │  • Save subtitles              │
-        │  • Upload to S3/R2 (TODO)      │
-        └────────────────────────────────┘
-                     │
-                     ▼
-        ┌────────────────────────────────┐
-        │      Output Directory          │
-        │  • {jobId}.mp4                 │
-        │  • {jobId}_thumb.jpg           │
-        │  • temp/{jobId}/ (cleanup)     │
-        └────────────────────────────────┘
+## Topology
+
+```text
+Client
+  -> API (`src/index.ts`)
+  -> Redis / BullMQ
+  -> Worker (`src/workers/clip.worker.ts`)
+  -> Orchestrator (`src/services/orchestrator.service.ts`)
+  -> R2 / S3-compatible storage
+  -> Webhook Worker (`src/workers/webhook.worker.ts`)
 ```
 
-## Service Dependencies & Status
+## API Surface
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                  EXTERNAL SERVICES                       │
-├─────────────────────────────────────────────────────────┤
-│ YT-DLP (YouTube)      ✅ Working                         │
-│ FFmpeg (Video)        ✅ Working                         │
-│ Whisper API           ❌ 401 Unauthorized                │
-│ AI LLM (Sumopod)      ❌ 401 Unauthorized                │
-│ TTS Provider          ❌ Not Implemented (gTTS broken)  │
-│ S3/R2 (Storage)       ⚠️  Optional (not used yet)       │
-└─────────────────────────────────────────────────────────┘
-```
+Endpoint utama:
 
-## Development Phases Timeline
+- `POST /api/v1/jobs`
+- `GET /api/v1/jobs/:jobId`
+- `GET /api/v1/jobs/:jobId/topics`
+- `POST /api/v1/jobs/:jobId/selection`
+- `GET /api/v1/jobs/:jobId/output`
+- `GET /health`
+- `GET /api/health`
 
-```
-WEEK 1 (CRITICAL FIX)
-├─ Day 1-2: Fix API credentials + TTS service
-├─ Day 3: Add error handling + job persistence
-├─ Day 4: Output management + file uploads
-└─ Day 5: Testing + Documentation
+Input utama menerima:
 
-WEEK 2-3 (INFRASTRUCTURE)
-├─ Database integration (MongoDB/PostgreSQL)
-├─ Queue system (Bull/RabbitMQ)
-├─ Docker + deployment setup
-└─ CI/CD pipeline (GitHub Actions)
+- `youtubeUrl`
+- `mode`
+- `selectionPolicy`
+- `customization`
+- `webhook`
 
-WEEK 4+ (FEATURES)
-├─ Batch processing
-├─ Advanced highlight detection
-├─ Frontend dashboard
-└─ CLI enhancements
-```
+## Processing Flow
 
-## File Structure (Sources)
-
-```
-src/
-├── index.ts                      # Express server + API endpoints
-├── config/
-│   └── env.ts                    # Environment configuration
-├── services/
-│   ├── orchestrator.service.ts   # 🧠 Main pipeline controller
-│   ├── youtube.service.ts        # ✅ Download videos
-│   ├── ffmpeg.service.ts         # ✅ Video processing
-│   ├── whisper.service.ts        # ❌ Transcription (401 error)
-│   ├── ai-analyzer.service.ts    # ❌ Highlight detection (401)
-│   ├── tts.service.ts            # ❌ Voice generation (broken)
-│   ├── subtitle.service.ts       # ⚠️  Disabled (FFmpeg issues)
-│   ├── s3.service.ts             # ⚠️  Storage (not fully used)
-│   ├── job-manager.service.ts    # ✅ Job tracking
-│   └── database.service.ts       # 🔜 TODO: persistence layer
-└── utils/
-    └── logger.ts                 # ✅ Pino logging
+```text
+POST /api/v1/jobs
+  -> JobManager menyimpan state awal di Redis
+  -> BullMQ enqueue clip job
+  -> worker mengambil job
+  -> mode auto/discovery menentukan perlu topic discovery atau tidak
+  -> orchestrator download source video
+  -> extract audio, transcribe, analyze, cut, subtitle, portrait render
+  -> apply customization (font subtitle, filter video)
+  -> upload video final + analysis markdown ke R2
+  -> cleanup temp/results lokal
+  -> job result tersedia di /api/v1/jobs/:jobId/output
 ```
 
-## API Request Flow
+## Core Components
 
-```
-POST /api/clip with JSON body
-{
-  "url": "https://www.youtube.com/watch?v=...",
-  "webhookUrl": "https://example.com/webhook" (optional)
-}
-                    │
-                    ▼
-        Returns 202 Accepted + jobId
-        {
-          "jobId": "uuid-v4",
-          "statusUrl": "http://localhost:8080/api/status/{jobId}"
-        }
-                    │
-                    ▼
-        Background Processing Starts
-                    │
-         ┌──────────┼──────────┐
-         ▼          ▼          ▼
-    GET /api/status/{jobId}
-    Returns current job state:
-    {
-      "jobId": "uuid",
-      "status": "rendering",      (downloading|extracting|analyzing|rendering|completed|failed)
-      "progress": 75,             (0-100)
-      "message": "Working...",
-      "result": {                 (if completed)
-        "videoPath": "output/...",
-        "thumbnailPath": "output/...",
-        "metadata": {...}
-      }
-    }
-```
+### API Layer
 
-## Current Test Results (Latest)
+- `src/index.ts`
+  - validasi request dasar
+  - create job dan status polling
+  - endpoint output final untuk consumer downstream
 
-| Metric | Result |
-|--------|--------|
-| YouTube Download | ✅ 22.1 MB in 7-8s |
-| Audio Extraction | ✅ MP3 in 3-4s |
-| Transcription | ❌ 401 Error |
-| AI Analysis | ❌ 401 Error |
-| Video Rendering | ✅ 21.6 MB in 30s |
-| Thumbnail | ✅ 89 KB in <1s |
-| **Total Time** | ~52s (with fallbacks) |
-| **Success Rate** | 100% (graceful degradation) |
+### Queue and Job State
 
----
+- `src/queue/queues.ts`
+  - kontrak payload queue
+  - definisi customization
+- `src/services/job-manager.service.ts`
+  - state job di Redis
+  - dedupe source URL dan idempotency
+  - webhook event emission
 
-Last Updated: March 6, 2026
+### Workers
+
+- `src/workers/clip.worker.ts`
+  - discovery mode
+  - selection handling
+  - enqueue fallback selection
+  - invoke orchestrator render
+- `src/workers/webhook.worker.ts`
+  - dispatch webhook event async
+
+### Media and AI Pipeline
+
+- `src/services/orchestrator.service.ts`
+  - koordinasi seluruh pipeline
+- `src/services/youtube.service.ts`
+  - metadata dan download source video
+- `src/services/ffmpeg.service.ts`
+  - cut, concat, thumbnail, filter, render helper
+- `src/services/whisper.service.ts`
+  - transkripsi audio
+- `src/services/ai-analyzer.service.ts`
+  - topic discovery, director cut, publish metadata
+- `src/services/subtitle.service.ts`
+  - subtitle ASS dan karaoke
+- `src/services/portrait-converter.service.ts`
+  - render portrait 9:16
+- `src/services/face-detector.service.ts`
+  - subject positioning dan fallback heuristic/YOLO
+- `src/services/s3.service.ts`
+  - upload artifact final ke R2
+
+## Runtime Dependencies
+
+- Node.js
+- Redis
+- FFmpeg / ffprobe
+- yt-dlp
+- kredensial AI dan Whisper
+- kredensial Cloudflare R2
+- Python dependency tambahan bila YOLO diaktifkan
+
+## Deployment Shape
+
+`docker-compose.yml` memisahkan service berikut:
+
+- `redis`
+- `api`
+- `worker`
+- `webhooks`
+
+Ini membuat API tetap responsif saat proses render berjalan lama di worker.
+
+## Output Contract
+
+Job yang selesai menghasilkan payload final berbentuk:
+
+- `videoUrl`
+- `analysisUrl`
+- `postingTitle`
+- `caption`
+- `captionWithHashtags`
+- `hashtags`
+- `duration`
+
+## Known Operational Gaps
+
+- CI belum tersedia
+- Validasi Docker belum dijalankan pada host kerja ini
+- monitoring production dan metrics belum ditambahkan

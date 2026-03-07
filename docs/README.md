@@ -96,5 +96,9 @@ Ambil hasil final melalui `GET /api/v1/jobs/:jobId/output`.
 ## Dokumen Tambahan
 
 - `docs/SETUP.md` untuk setup dan contoh payload
+- `docs/ARCHITECTURE.md` untuk gambaran arsitektur yang aktif
+- `docs/REPOSITORY_AUDIT.md` untuk audit kesiapan repo publik
+- `docs/RELEASE_CHECKLIST.md` untuk checklist release operasional
 - `.env.example` untuk daftar variabel environment
 - `docker-compose.yml` dan `install.sh` untuk bootstrap deployment
+- `docs/archive/` untuk dokumen planning dan histori implementasi lama
