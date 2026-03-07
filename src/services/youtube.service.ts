@@ -12,6 +12,35 @@ export interface VideoInfo {
 }
 
 export class YouTubeService {
+    private static getUsableCookiesFile(): string | undefined {
+        if (!ENV.COOKIES_FILE || !fs.existsSync(ENV.COOKIES_FILE)) {
+            return undefined;
+        }
+
+        try {
+            const content = fs.readFileSync(ENV.COOKIES_FILE, 'utf8');
+            const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+
+            if (lines.length === 0) {
+                log.warn({ cookiesFile: ENV.COOKIES_FILE }, 'Skipping empty cookies file');
+                return undefined;
+            }
+
+            const hasNetscapeHeader = lines.some((line) => line.includes('Netscape HTTP Cookie File'));
+            const hasCookieRows = lines.some((line) => !line.startsWith('#') && line.split('\t').length >= 7);
+
+            if (!hasNetscapeHeader && !hasCookieRows) {
+                log.warn({ cookiesFile: ENV.COOKIES_FILE }, 'Skipping invalid cookies file format');
+                return undefined;
+            }
+
+            return ENV.COOKIES_FILE;
+        } catch (err) {
+            log.warn({ err, cookiesFile: ENV.COOKIES_FILE }, 'Could not inspect cookies file, continuing without cookies');
+            return undefined;
+        }
+    }
+
     static async getVideoInfo(url: string): Promise<VideoInfo> {
         try {
             const infoOutput = execSync(`${ENV.YT_DLP_PATH} -j "${url}"`, {
@@ -59,9 +88,9 @@ export class YouTubeService {
                 '--no-warnings'
             ];
 
-            // Add cookies if available
-            if (fs.existsSync(ENV.COOKIES_FILE)) {
-                args.push('--cookies', ENV.COOKIES_FILE);
+            const cookiesFile = this.getUsableCookiesFile();
+            if (cookiesFile) {
+                args.push('--cookies', cookiesFile);
             }
 
             log.info({ args }, 'Executing yt-dlp command');
