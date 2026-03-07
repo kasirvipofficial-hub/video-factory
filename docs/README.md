@@ -107,7 +107,8 @@ Ambil hasil final melalui `GET /api/v1/jobs/:jobId/output`.
 ## Komponen Runtime
 
 - `api`: menerima request job dan endpoint status/output
-- `worker`: menjalankan discovery, render, upload, cleanup
+- `worker`: menjalankan discovery, selection handling, dan prepare render
+- `render-worker`: menjalankan cut, concat, face detection, portrait render, upload, cleanup
 - `webhooks`: mengirim event job ke endpoint eksternal
 - `redis`: broker BullMQ
 

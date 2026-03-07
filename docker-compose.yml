@@ -69,6 +69,31 @@ services:
       - ./assets/music:/app/assets/music
       - ./cookies.txt:/app/cookies.txt:ro
 
+  render-worker:
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      REQUIRE_COMPLETE_ENV: "true"
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/workers/render.worker.js"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - ./temp:/app/temp
+      - ./results:/app/results
+      - ./output:/app/output
+      - ./assets/fonts:/app/assets/fonts:ro
+      - ./assets/music:/app/assets/music
+      - ./cookies.txt:/app/cookies.txt:ro
+
   webhooks:
     init: true
     build:

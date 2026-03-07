@@ -267,9 +267,9 @@ if [ "${#missing_keys[@]}" -gt 0 ]; then
 fi
 
 if supports_compose_wait; then
-  "${COMPOSE_CMD[@]}" up -d --build --wait redis api worker webhooks
+  "${COMPOSE_CMD[@]}" up -d --build --wait redis api worker render-worker webhooks
 else
-  "${COMPOSE_CMD[@]}" up -d --build redis api worker webhooks
+  "${COMPOSE_CMD[@]}" up -d --build redis api worker render-worker webhooks
   wait_for_service redis 60
   wait_for_service api 180
 fi

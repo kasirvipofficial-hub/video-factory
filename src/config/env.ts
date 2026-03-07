@@ -25,9 +25,11 @@ export const ENV = {
     REDIS_URL: optional('REDIS_URL', 'redis://127.0.0.1:6379'),
     REDIS_PREFIX: optional('REDIS_PREFIX', 'clipper'),
     CLIP_QUEUE_NAME: optional('CLIP_QUEUE_NAME', 'clip.jobs'),
+    RENDER_QUEUE_NAME: optional('RENDER_QUEUE_NAME', 'clip.render'),
     WEBHOOK_QUEUE_NAME: optional('WEBHOOK_QUEUE_NAME', 'clip.webhooks'),
     FALLBACK_QUEUE_NAME: optional('FALLBACK_QUEUE_NAME', 'clip.fallbacks'),
     CLIP_WORKER_CONCURRENCY: parseInt(optional('CLIP_WORKER_CONCURRENCY', '1'), 10),
+    RENDER_WORKER_CONCURRENCY: parseInt(optional('RENDER_WORKER_CONCURRENCY', '1'), 10),
     WEBHOOK_WORKER_CONCURRENCY: parseInt(optional('WEBHOOK_WORKER_CONCURRENCY', '3'), 10),
 
     // YouTube

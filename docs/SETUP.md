@@ -97,7 +97,7 @@ YouTube URL
     ↓
 📝 SubtitleService.generateASS() → Create subtitles
     ↓
-📹 FFmpegService.addSubtitles() → Add to final video
+📹 Render worker → cut, concat, portrait conversion, karaoke subtitle burn
     ↓
 📸 FFmpegService.generateThumbnail() → Create thumbnail
     ↓

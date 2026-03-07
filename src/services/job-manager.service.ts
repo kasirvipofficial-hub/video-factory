@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { ENV } from '../config/env';
 import { ensureRedisConnected, redis } from '../queue/connection';
-import { ClipCustomization, ClipJobPayload, clipQueue, enqueueClipJob, enqueueWebhookEvent, JobWebhookConfig } from '../queue/queues';
+import { ClipCustomization, ClipJobPayload, clipQueue, enqueueClipJob, enqueueWebhookEvent, JobWebhookConfig, renderQueue, RenderJobPayload } from '../queue/queues';
 import { log } from '../utils/logger';
 
 export type JobStatus =
@@ -92,12 +92,14 @@ export class JobManager {
         return Date.now() - updatedAt >= ENV.JOB_STALE_AFTER_MS;
     }
 
-    private static async hasQueuedClipWork(jobId: string): Promise<boolean> {
-        const jobs = await clipQueue.getJobs(['active', 'waiting', 'delayed', 'prioritized', 'paused', 'waiting-children']);
+    private static async hasQueuedWork(jobId: string): Promise<boolean> {
+        const clipJobs = await clipQueue.getJobs(['active', 'waiting', 'delayed', 'prioritized', 'paused', 'waiting-children']);
+        const renderJobs = await renderQueue.getJobs(['active', 'waiting', 'delayed', 'prioritized', 'paused', 'waiting-children']);
+        const jobs = [...clipJobs, ...renderJobs];
         const now = Date.now();
 
         return jobs.some((queueJob) => {
-            const payload = queueJob.data as ClipJobPayload | undefined;
+            const payload = queueJob.data as ClipJobPayload | RenderJobPayload | undefined;
             if (payload?.jobId !== jobId) {
                 return false;
             }
@@ -178,7 +180,7 @@ export class JobManager {
             return job;
         }
 
-        if (await this.hasQueuedClipWork(job.jobId)) {
+        if (await this.hasQueuedWork(job.jobId)) {
             return job;
         }
 

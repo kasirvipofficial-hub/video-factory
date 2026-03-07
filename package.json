@@ -6,12 +6,14 @@
   "scripts": {
     "dev": "ts-node src/index.ts",
     "dev:worker": "ts-node src/workers/clip.worker.ts",
+    "dev:render-worker": "ts-node src/workers/render.worker.ts",
     "dev:webhooks": "ts-node src/workers/webhook.worker.ts",
     "dev:webhook-dummy": "ts-node src/examples/webhook-dummy.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "start:api": "node dist/index.js",
     "start:worker": "node dist/workers/clip.worker.js",
+    "start:render-worker": "node dist/workers/render.worker.js",
     "start:webhooks": "node dist/workers/webhook.worker.js",
     "start:webhook-dummy": "node dist/examples/webhook-dummy.js",
     "clip": "node dist/index.js"

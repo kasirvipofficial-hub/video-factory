@@ -45,6 +45,12 @@ export interface ClipJobPayload {
     triggerReason?: 'initial' | 'selection' | 'timeout_fallback' | 'recovery';
 }
 
+export interface RenderJobPayload {
+    jobId: string;
+    tenantId: string;
+    triggerReason?: 'initial' | 'selection' | 'timeout_fallback' | 'recovery';
+}
+
 export interface WebhookEventPayload {
     event:
         | 'job.queued'
@@ -76,6 +82,12 @@ export const webhookQueue = new Queue<WebhookEventPayload>(ENV.WEBHOOK_QUEUE_NAM
     defaultJobOptions: defaultWebhookJobOptions
 });
 
+export const renderQueue = new Queue<RenderJobPayload>(ENV.RENDER_QUEUE_NAME, {
+    connection: queueConnection(),
+    prefix: ENV.REDIS_PREFIX,
+    defaultJobOptions: defaultClipJobOptions
+});
+
 export const fallbackQueue = new Queue<SelectionTimeoutPayload>(ENV.FALLBACK_QUEUE_NAME, {
     connection: queueConnection(),
     prefix: ENV.REDIS_PREFIX,
@@ -98,6 +110,15 @@ export async function enqueueClipJob(payload: ClipJobPayload): Promise<void> {
 export async function enqueueWebhookEvent(payload: WebhookEventPayload): Promise<void> {
     await ensureRedisConnected();
     await webhookQueue.add('webhook.dispatch', payload);
+}
+
+export async function enqueueRenderJob(payload: RenderJobPayload): Promise<void> {
+    await ensureRedisConnected();
+    const safeReason = (payload.triggerReason || 'initial').replace(/[^a-zA-Z0-9_-]/g, '-');
+    const queueJobId = `${payload.jobId}-${safeReason}-render-${Date.now()}`;
+    await renderQueue.add('render.process', payload, {
+        jobId: queueJobId
+    });
 }
 
 export async function enqueueSelectionTimeout(payload: SelectionTimeoutPayload, delayMs: number): Promise<void> {

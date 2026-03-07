@@ -1,7 +1,7 @@
 import { Worker } from 'bullmq';
 import { ENV } from '../config/env';
 import { ensureRedisConnected, queueConnection, wireRedisLogging } from '../queue/connection';
-import { ClipJobPayload, enqueueClipJob, enqueueSelectionTimeout, SelectionTimeoutPayload } from '../queue/queues';
+import { ClipJobPayload, enqueueClipJob, enqueueRenderJob, enqueueSelectionTimeout, SelectionTimeoutPayload } from '../queue/queues';
 import { JobManager, TopicCandidate } from '../services/job-manager.service';
 import { Orchestrator } from '../services/orchestrator.service';
 import { YouTubeService } from '../services/youtube.service';
@@ -170,18 +170,37 @@ async function processClipJob(data: ClipJobPayload): Promise<Record<string, unkn
     const effectiveSelection = data.selection ?? refreshedJob?.selection;
     const selectedCandidates = resolveSelection(candidates, effectiveSelection, job.selectionPolicy);
 
-    await JobManager.updateJob(job.jobId, {
-        status: 'rendering',
-        progress: 70,
-        stage: 'rendering',
-        message: 'Rendering selected clips',
-        selection: effectiveSelection
-    });
+    if (data.triggerReason === 'recovery') {
+        const preparedPlan = Orchestrator.getPreparedRenderPlan(job.jobId);
+        if (preparedPlan) {
+            await JobManager.updateJob(job.jobId, {
+                status: 'rendering',
+                progress: 62,
+                stage: 'render_queued',
+                message: 'Recovered prepared render. Requeueing render worker...',
+                selection: effectiveSelection
+            });
 
-    const result = await Orchestrator.processYouTubeToClip(
+            await enqueueRenderJob({
+                jobId: job.jobId,
+                tenantId: job.tenantId,
+                triggerReason: data.triggerReason
+            });
+
+            await JobManager.clearSelectionTimeoutScheduled(job.jobId);
+
+            return {
+                mode: data.mode,
+                selectedTopicCount: selectedCandidates.length,
+                renderQueued: true,
+                reusedPreparedRender: true
+            };
+        }
+    }
+
+    await Orchestrator.prepareRenderJob(
         data.youtubeUrl,
         data.jobId,
-        data.webhook?.url,
         {
             selectedCandidates,
             customization: data.customization ?? job.customization,
@@ -190,12 +209,26 @@ async function processClipJob(data: ClipJobPayload): Promise<Record<string, unkn
         }
     );
 
+    await JobManager.updateJob(job.jobId, {
+        status: 'rendering',
+        progress: 62,
+        stage: 'render_queued',
+        message: 'Prepared render plan queued for render worker',
+        selection: effectiveSelection
+    });
+
+    await enqueueRenderJob({
+        jobId: job.jobId,
+        tenantId: job.tenantId,
+        triggerReason: data.triggerReason
+    });
+
     await JobManager.clearSelectionTimeoutScheduled(job.jobId);
 
     return {
         mode: data.mode,
         selectedTopicCount: selectedCandidates.length,
-        output: result
+        renderQueued: true
     };
 }
 

@@ -45,12 +45,34 @@ export interface ProcessClipOptions {
     maxOutputDuration?: number;
 }
 
+interface PreparedRenderPlan {
+    jobId: string;
+    youtubeUrl: string;
+    workDir: string;
+    videoPath: string;
+    videoInfo: VideoInfo;
+    projectResultDir: string;
+    reportPath: string;
+    subtitleSegments: TranscriptionSegment[];
+    highlightsToProcess: HighlightSegment[];
+    selectedCandidates?: TopicCandidate[];
+    customization?: ClipCustomization;
+}
+
 interface TopicDiscoveryArtifacts {
     topicDiscoveryJsonPath: string;
     topicDiscoveryMarkdownPath: string;
 }
 
 export class Orchestrator {
+    private static getWorkDir(jobId: string): string {
+        return path.join(ENV.TEMP_DIR, jobId);
+    }
+
+    private static getRenderPlanPath(jobId: string): string {
+        return path.join(this.getWorkDir(jobId), 'render-plan.json');
+    }
+
     private static getProjectResultDir(videoTitle: string, jobId: string): string {
         const safeTitle = videoTitle.replace(/[^a-z0-9]/gi, '_').toLowerCase();
         const projectResultDir = path.resolve(ENV.RESULTS_DIR, `${safeTitle}_${jobId.substring(0, 4)}`);
@@ -78,6 +100,30 @@ export class Orchestrator {
         } catch (error) {
             log.warn({ dirPath, label, err: error }, '[CLEANUP] Failed to remove local directory');
             return false;
+        }
+    }
+
+    private static savePreparedRenderPlan(plan: PreparedRenderPlan): void {
+        const renderPlanPath = this.getRenderPlanPath(plan.jobId);
+        const renderPlanDir = path.dirname(renderPlanPath);
+        if (!fs.existsSync(renderPlanDir)) {
+            fs.mkdirSync(renderPlanDir, { recursive: true });
+        }
+
+        fs.writeFileSync(renderPlanPath, JSON.stringify(plan, null, 2));
+    }
+
+    static getPreparedRenderPlan(jobId: string): PreparedRenderPlan | undefined {
+        const renderPlanPath = this.getRenderPlanPath(jobId);
+        if (!fs.existsSync(renderPlanPath)) {
+            return undefined;
+        }
+
+        try {
+            return JSON.parse(fs.readFileSync(renderPlanPath, 'utf8')) as PreparedRenderPlan;
+        } catch (err) {
+            log.warn({ err, jobId, renderPlanPath }, '[RENDER] Failed to read prepared render plan');
+            return undefined;
         }
     }
 
@@ -1199,6 +1245,653 @@ export class Orchestrator {
     /**
      * Main flow: YouTube URL → Analysis → Highlights → Narasi → Render
      */
+    static async prepareRenderJob(
+        youtubeUrl: string,
+        jobId: string,
+        options: ProcessClipOptions = {}
+    ): Promise<PreparedRenderPlan> {
+        const workDir = this.getWorkDir(jobId);
+
+        if (!fs.existsSync(workDir)) {
+            fs.mkdirSync(workDir, { recursive: true });
+        }
+
+        log.info({ youtubeUrl, jobId }, '[PREPARE] Starting render preparation pipeline');
+        JobManager.updateJob(jobId, { status: 'downloading', progress: 5, message: 'Starting YouTube download...' });
+
+        log.info('[1/6] Downloading video...');
+        const { filePath: videoPath, info: videoInfo } = await this.resolveSourceVideo(
+            jobId,
+            youtubeUrl,
+            workDir
+        );
+
+        const hasSelectedCandidates = Boolean(options.selectedCandidates && options.selectedCandidates.length > 0);
+        const projectResultDir = this.getProjectResultDir(videoInfo.title, jobId);
+
+        let audioAnalysis: AudioAnalysis | undefined = {
+            peaks: [],
+            silences: [],
+            avgIntensity: 0,
+            suggestedCutPoints: []
+        };
+        let transcriptionSegments: TranscriptionSegment[] = [];
+        let directorCut: { highlights: HighlightSegment[]; markdown: string } = {
+            highlights: [],
+            markdown: '# Fast Path Render\n\nNo AI director plan was generated for this run.'
+        };
+
+        const reportPath = path.join(projectResultDir, 'analysis.md');
+        const audioAnalysisPath = path.join(projectResultDir, 'audio_analysis.json');
+
+        if (hasSelectedCandidates) {
+            log.info(
+                { selectedCandidates: options.selectedCandidates?.length },
+                '[FAST-PATH] Selected topics provided, skipping full transcript and AI planning'
+            );
+
+            fs.writeFileSync(
+                reportPath,
+                [
+                    '# Fast Path Render',
+                    '',
+                    'Selected topic candidates were provided by discovery/selection.',
+                    'The pipeline skipped full-audio transcription, preview upload, Data Agent, and Director Agent',
+                    'to render the chosen topic faster.'
+                ].join('\n')
+            );
+            log.info({ reportPath }, '[DOC] Fast path analysis markdown saved');
+
+            fs.writeFileSync(audioAnalysisPath, JSON.stringify(audioAnalysis, null, 2));
+            log.info({ audioAnalysisPath }, '[DOC] Fast path audio analysis placeholder saved');
+        } else {
+            log.info('[2/6] Extracting audio for transcription...');
+            JobManager.updateJob(jobId, { status: 'extracting_audio', progress: 20, message: 'Extracting audio for transcription...' });
+            const audioPath = path.join(workDir, 'audio.mp3');
+            if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 0) {
+                log.info({ audioPath }, '[FAST-PATH] Reusing previously extracted audio');
+            } else {
+                await FFmpegService.extractAudio(videoPath, audioPath);
+            }
+
+            log.info('[3/6] Running audio analysis and transcription in parallel...');
+            JobManager.updateJob(jobId, { status: 'transcribing', progress: 30, message: 'Transcribing audio and analyzing peaks...' });
+
+            const [audioAnalysisResult, transcriptionResult] = await Promise.allSettled([
+                AudioAnalyzerService.analyzeAudio(audioPath),
+                WhisperService.transcribe(audioPath)
+            ]);
+
+            if (audioAnalysisResult.status === 'fulfilled') {
+                audioAnalysis = audioAnalysisResult.value;
+                log.info({
+                    peaks: audioAnalysis.peaks.length,
+                    silences: audioAnalysis.silences.length,
+                    cutPoints: audioAnalysis.suggestedCutPoints.length
+                }, '✅ Audio analysis complete');
+            } else {
+                log.warn({ err: audioAnalysisResult.reason }, '⚠️ Audio analysis failed, continuing without it');
+            }
+
+            if (transcriptionResult.status === 'fulfilled') {
+                transcriptionSegments = transcriptionResult.value;
+                log.info({ count: transcriptionSegments.length }, 'Transcription segments obtained');
+
+                const srtPath = path.join(workDir, 'transcript.srt');
+                fs.writeFileSync(srtPath, WhisperService.generateSRT(transcriptionSegments));
+                log.info({ srtPath }, '[SUCCESS] SRT file written');
+            } else {
+                log.warn({ err: transcriptionResult.reason }, 'Transcription failed, continuing without transcript');
+            }
+
+            const formattedTranscript = transcriptionSegments
+                .map(s => `[${s.start}s - ${s.end}s] ${s.text}`)
+                .join('\n');
+
+            log.info('[4/6] Creating preview and analyzing data...');
+            JobManager.updateJob(jobId, { status: 'analyzing', progress: 40, message: 'Extracting chronological facts via AI Data Agent...' });
+            const previewPath = path.join(workDir, 'preview.mp4');
+            try {
+                await FFmpegService.generatePreview(videoPath, previewPath);
+            } catch (ffmpegErr) {
+                log.warn({ err: ffmpegErr }, 'Preview generation failed, AI vision might be impaired, trying to proceed anyway');
+            }
+
+            log.info('[4.5/6] Uploading preview to Cloudflare R2...');
+            let publicPreviewUrl = '';
+            try {
+                publicPreviewUrl = await S3Service.uploadFile(previewPath, `ytdl/${jobId}_preview.mp4`);
+            } catch (r2Err) {
+                log.warn({ err: r2Err }, 'R2 Upload failed, AI vision might be impaired if URL is required');
+            }
+
+            const factualData = await AIAnalyzer.analyzeData(videoInfo.title, publicPreviewUrl, formattedTranscript);
+
+            log.info('[5/6] Director Agent planning viral viral clip...');
+            JobManager.updateJob(jobId, { status: 'analyzing', progress: 55, message: 'Director Agent is crafting the viral storyline...' });
+            directorCut = await AIAnalyzer.directViralClip(videoInfo.title, factualData);
+
+            fs.writeFileSync(reportPath, directorCut.markdown);
+            log.info({ reportPath }, '[DOC] Analysis markdown saved');
+
+            fs.writeFileSync(audioAnalysisPath, JSON.stringify({
+                peaks: audioAnalysis?.peaks || [],
+                silences: audioAnalysis?.silences || [],
+                avgIntensity: audioAnalysis?.avgIntensity || 0,
+                suggestedCutPoints: audioAnalysis?.suggestedCutPoints || []
+            }, null, 2));
+            log.info({ audioAnalysisPath }, '[DOC] Audio analysis saved');
+        }
+
+        const videoDuration = videoInfo.duration || 420;
+        const contextAwareSelection = options.selectedCandidates && options.selectedCandidates.length > 0
+            ? this.buildContextAwareSelectedHighlights(
+                options.selectedCandidates,
+                videoDuration,
+                options.maxOutputDuration || ENV.MAX_OUTPUT_DURATION
+            )
+            : null;
+        const selectedHighlights = contextAwareSelection
+            ? contextAwareSelection.highlights
+            : [];
+
+        let highlightsToProcess = selectedHighlights.length > 0
+            ? this.normalizeHighlights(selectedHighlights, videoDuration)
+            : this.normalizeHighlights(directorCut.highlights, videoDuration);
+
+        const keepSegmentCount = highlightsToProcess.filter(h => h.action === 'keep').length;
+        const genericDirectorPlan = this.isLikelyGenericPlan(highlightsToProcess);
+
+        if (selectedHighlights.length === 0 && (highlightsToProcess.length === 0 || keepSegmentCount < 2 || genericDirectorPlan)) {
+            log.warn(
+                { keepSegmentCount, genericDirectorPlan },
+                'Director output not strong enough, activating smart transcript-driven auto-cuts...'
+            );
+
+            const smartCuts = this.buildSmartAutoCuts(
+                transcriptionSegments,
+                audioAnalysis,
+                videoDuration
+            );
+
+            if (smartCuts.length > 0) {
+                highlightsToProcess = smartCuts;
+                log.info({ count: highlightsToProcess.length, method: 'smart-transcript-audio' }, '✅ Smart auto-cuts activated');
+            } else {
+                highlightsToProcess = this.buildVariableFallbackCuts(videoDuration);
+                log.info({ count: highlightsToProcess.length, method: 'variable-fallback' }, '✅ Variable fallback cuts activated');
+            }
+        }
+
+        const minOutputDuration = options.minOutputDuration || ENV.MIN_OUTPUT_DURATION;
+        const maxOutputDuration = contextAwareSelection?.preferredMaxDuration || options.maxOutputDuration || ENV.MAX_OUTPUT_DURATION;
+        const fallbackGuardrailPool = hasSelectedCandidates
+            ? []
+            : this.normalizeHighlights(
+                this.buildSmartAutoCuts(transcriptionSegments, audioAnalysis, videoDuration),
+                videoDuration
+            );
+
+        if (contextAwareSelection) {
+            log.info(
+                {
+                    selectedCandidates: options.selectedCandidates?.length,
+                    preferredMaxDuration: contextAwareSelection.preferredMaxDuration,
+                    contextAwareDuration: contextAwareSelection.highlights
+                        .reduce((sum, seg) => sum + (seg.end - seg.start), 0)
+                        .toFixed(1)
+                },
+                'Applying context-aware duration targeting for selected topics'
+            );
+        }
+
+        highlightsToProcess = this.enforceDurationGuardrail(
+            highlightsToProcess,
+            fallbackGuardrailPool,
+            minOutputDuration,
+            maxOutputDuration
+        );
+
+        log.info(
+            {
+                minOutputDuration,
+                maxOutputDuration,
+                selectedSegments: highlightsToProcess.length,
+                totalDuration: highlightsToProcess
+                    .reduce((sum, seg) => sum + (seg.end - seg.start), 0)
+                    .toFixed(1)
+            },
+            '[GUARDRAIL] Duration guardrail applied'
+        );
+
+        const plan: PreparedRenderPlan = {
+            jobId,
+            youtubeUrl,
+            workDir,
+            videoPath,
+            videoInfo,
+            projectResultDir,
+            reportPath,
+            subtitleSegments: transcriptionSegments,
+            highlightsToProcess,
+            selectedCandidates: options.selectedCandidates,
+            customization: options.customization
+        };
+
+        this.savePreparedRenderPlan(plan);
+
+        await JobManager.updateJob(jobId, {
+            status: 'rendering',
+            progress: 60,
+            stage: 'render_prepared',
+            message: 'Preparation complete. Waiting for render worker...',
+            artifacts: {
+                renderPlanPath: this.getRenderPlanPath(jobId)
+            }
+        });
+
+        return plan;
+    }
+
+    static async processPreparedRender(jobId: string): Promise<ClipResult> {
+        const plan = this.getPreparedRenderPlan(jobId);
+        if (!plan) {
+            throw new Error(`Prepared render plan not found for job ${jobId}`);
+        }
+
+        const {
+            workDir,
+            videoPath,
+            videoInfo,
+            projectResultDir,
+            reportPath,
+            subtitleSegments: preparedSubtitleSegments,
+            highlightsToProcess,
+            selectedCandidates,
+            customization
+        } = plan;
+
+        const cutSegments: string[] = [];
+        const segmentsDir = path.join(projectResultDir, 'segments');
+        if (!fs.existsSync(segmentsDir)) fs.mkdirSync(segmentsDir, { recursive: true });
+
+        log.info('[6/6] Cutting highlights...');
+        JobManager.updateJob(jobId, { status: 'cutting', progress: 65, message: 'Cutting video highlights based on prepared plan...' });
+
+        for (let i = 0; i < highlightsToProcess.length; i++) {
+            const highlight = highlightsToProcess[i];
+            if (highlight.action === 'discard') {
+                log.info({ reason: highlight.reason }, `Skipping segment ${i} (action: discard)`);
+                continue;
+            }
+
+            const segmentPath = path.join(segmentsDir, `segment_${i + 1}.mp4`);
+            const mixedSegmentPath = path.join(segmentsDir, `segment_${i + 1}_tts_mixed.mp4`);
+
+            await FFmpegService.cutSegment(
+                videoPath,
+                segmentPath,
+                highlight.start,
+                highlight.end
+            );
+
+            if (highlight.needsTTS && highlight.narrativeText) {
+                const ttsPath = path.join(segmentsDir, `segment_${i + 1}_tts.mp3`);
+                try {
+                    await TTSService.generateVoice(
+                        highlight.narrativeText,
+                        ttsPath,
+                        ENV.TTS_PROVIDER
+                    );
+                    await FFmpegService.mixAudio(
+                        segmentPath,
+                        ttsPath,
+                        mixedSegmentPath,
+                        0.8
+                    );
+                    cutSegments.push(mixedSegmentPath);
+                } catch (err) {
+                    log.warn('TTS generation failed for segment, skipping TTS for this segment');
+                    cutSegments.push(segmentPath);
+                }
+            } else {
+                cutSegments.push(segmentPath);
+            }
+        }
+
+        const concatPath = path.join(workDir, 'concat.mp4');
+        let outputVideoPath: string;
+
+        if (cutSegments.length > 1) {
+            outputVideoPath = await FFmpegService.concat(cutSegments, concatPath);
+        } else if (cutSegments.length === 1) {
+            outputVideoPath = cutSegments[0];
+        } else if (selectedCandidates && selectedCandidates.length > 0) {
+            throw new Error('Selected highlights produced no renderable segments');
+        } else {
+            log.warn('No highlights found, using full video');
+            outputVideoPath = videoPath;
+        }
+
+        await PortraitConverterService.assertValidVideo(outputVideoPath);
+
+        log.info('[TASK] Skipping global narrative (Director agent manages per-segment bridges)');
+
+        log.info('[TASK] Re-transcribing concatenated video for accurate subtitles...');
+        let concatTranscriptionSegments: TranscriptionSegment[] = [];
+        try {
+            concatTranscriptionSegments = await WhisperService.transcribe(outputVideoPath);
+            log.info(
+                { count: concatTranscriptionSegments.length },
+                '✅ Concatenated video re-transcription complete'
+            );
+
+            const concatSrtPath = path.join(projectResultDir, 'concat_transcript.srt');
+            fs.writeFileSync(
+                concatSrtPath,
+                WhisperService.generateSRT(concatTranscriptionSegments)
+            );
+            log.info({ concatSrtPath }, '[DOC] Concatenated transcript saved');
+        } catch (err) {
+            log.warn(
+                { err },
+                '⚠️ Re-transcription of concatenated video failed, falling back to original transcription'
+            );
+            concatTranscriptionSegments = preparedSubtitleSegments;
+        }
+
+        log.info('[TASK] Generating subtitle data from concatenated video...');
+        const assSubtitlePath = path.join(projectResultDir, 'subtitles_landscape.ass');
+
+        let subtitleSegments = concatTranscriptionSegments;
+        if (subtitleSegments.length === 0) {
+            subtitleSegments = [{
+                start: 1,
+                end: Math.min(videoInfo.duration, 10),
+                text: videoInfo.title
+            }];
+            log.info('Using title as fallback subtitle');
+        }
+
+        const landscapeSubtitleOptions = this.buildSubtitleOptions(customization, {
+            stylePreset: 'basic',
+            maxLinesPerDisplay: 3
+        });
+        const assLandscapeContent = SubtitleService.generateASS(
+            subtitleSegments,
+            '1920x1080',
+            landscapeSubtitleOptions
+        );
+        fs.writeFileSync(assSubtitlePath, assLandscapeContent);
+        log.info({ assSubtitlePath }, '[DOC] Landscape ASS saved (for reference)');
+
+        const finalVideoPath = outputVideoPath;
+
+        log.info('[6/7] Detecting faces for subject tracking...');
+        JobManager.updateJob(jobId, { status: 'analyzing_faces', progress: 80, message: 'Detecting faces for portrait conversion...' });
+        let faceAnalysis: FaceAnalysis | null = null;
+        try {
+            faceAnalysis = await FaceDetectorService.analyzeVideoForFaces(outputVideoPath);
+            log.info(
+                { facesFound: faceAnalysis.faceCount, framesAnalyzed: faceAnalysis.totalFrames },
+                '[👁️ Face Detection] Complete'
+            );
+
+            const faceAnalysisPath = path.join(projectResultDir, 'face_analysis.json');
+            fs.writeFileSync(faceAnalysisPath, JSON.stringify(faceAnalysis, null, 2));
+            log.info({ faceAnalysisPath }, '[DOC] Face analysis saved');
+        } catch (err) {
+            log.warn({ err }, '[👁️ Face Detection] Failed, skipping portrait conversion');
+            faceAnalysis = null;
+        }
+
+        const portraitVideoTargetPath = path.join(projectResultDir, 'final_video_portrait_no_subs.mp4');
+        const portraitWithSubtitlesPath = path.join(projectResultDir, 'final_video_portrait.mp4');
+        let finalOutputPath = finalVideoPath;
+        let portraitDecisionPath: string | undefined;
+
+        log.info('[7/7] Converting to portrait format (9:16) for mobile...');
+        JobManager.updateJob(jobId, { status: 'converting_format', progress: 85, message: 'Converting to portrait 9:16 format...' });
+
+        try {
+            const videoDimensions = await PortraitConverterService.getVideoDimensions(finalVideoPath);
+            const fallbackCropBox = PortraitConverterService.getFallbackCropBox(videoDimensions);
+            const cropBox = faceAnalysis?.recommendedCropBox || fallbackCropBox;
+            const faceConfidence = this.getAverageFaceConfidence(faceAnalysis);
+            const portraitPlan = PortraitConverterService.planPortraitRender(videoDimensions, cropBox, {
+                usedFaceDetection: Boolean(faceAnalysis?.recommendedCropBox),
+                faceConfidence
+            });
+            portraitDecisionPath = path.join(projectResultDir, 'portrait_decision.json');
+            const portraitDecision = {
+                sourceDimensions: videoDimensions,
+                usedFaceDetection: Boolean(faceAnalysis?.recommendedCropBox),
+                faceConfidence,
+                ...portraitPlan
+            };
+
+            if (!fs.existsSync(projectResultDir)) {
+                fs.mkdirSync(projectResultDir, { recursive: true });
+            }
+            fs.writeFileSync(portraitDecisionPath, JSON.stringify(portraitDecision, null, 2));
+
+            log.info(
+                {
+                    mode: portraitPlan.mode,
+                    usedFaceDetection: portraitDecision.usedFaceDetection,
+                    faceConfidence,
+                    requestedCropBox: portraitPlan.requestedCropBox,
+                    safeSubjectBox: portraitPlan.safeSubjectBox,
+                    portraitWindow: portraitPlan.portraitWindow,
+                    reasons: portraitPlan.reasons,
+                    portraitDecisionPath
+                },
+                '[📱 Portrait] Render plan selected'
+            );
+
+            log.info('[TASK] Generating karaoke subtitle for portrait format...');
+            const portraitAssPath = path.join(projectResultDir, 'subtitles_portrait_karaoke.ass');
+            const portraitDimensions = PortraitConverterService.getPortraitOutputDimensions();
+            const portraitResolution = `${portraitDimensions.width}x${portraitDimensions.height}`;
+
+            const portraitSubtitleOptions = this.buildSubtitleOptions(customization, {
+                stylePreset: 'karaoke_yellow',
+                maxLinesPerDisplay: 3
+            });
+            const portraitKaraokeContent = SubtitleService.generateKaraokeASS(
+                subtitleSegments,
+                portraitResolution,
+                {
+                    ...portraitSubtitleOptions,
+                    animationPreset: ''
+                }
+            );
+            fs.writeFileSync(portraitAssPath, portraitKaraokeContent);
+            log.info(
+                { resolution: portraitResolution, path: portraitAssPath },
+                '[✨ Karaoke] Portrait karaoke subtitle generated'
+            );
+
+            try {
+                log.info('[TASK] Converting to portrait video with embedded karaoke subtitle...');
+                if (portraitPlan.mode === 'blur_fallback') {
+                    log.info({ reasons: portraitPlan.reasons }, '[📱 Portrait] Using subject-aware blur fallback');
+                    await PortraitConverterService.convertWithBlurFallback(
+                        finalVideoPath,
+                        portraitWithSubtitlesPath,
+                        cropBox,
+                        portraitDimensions.width,
+                        portraitDimensions.height,
+                        portraitAssPath
+                    );
+                } else {
+                    const portraitResult = await PortraitConverterService.convertToPortrait(
+                        finalVideoPath,
+                        portraitWithSubtitlesPath,
+                        cropBox,
+                        portraitAssPath
+                    );
+
+                    log.info(
+                        { format: portraitResult.format, method: portraitResult.conversionMethod },
+                        '[📱 Portrait] Conversion complete'
+                    );
+                }
+
+                await PortraitConverterService.assertValidVideo(portraitWithSubtitlesPath);
+                finalOutputPath = portraitWithSubtitlesPath;
+                log.info('[✅ SUCCESS] Portrait video with karaoke subtitle created in one pass');
+            } catch (subErr) {
+                log.warn({ err: subErr }, 'One-pass portrait+subtitle render failed, falling back to portrait video without subtitles');
+
+                if (portraitPlan.mode === 'blur_fallback') {
+                    await PortraitConverterService.convertWithBlurFallback(
+                        finalVideoPath,
+                        portraitVideoTargetPath,
+                        cropBox,
+                        portraitDimensions.width,
+                        portraitDimensions.height
+                    );
+                } else {
+                    await PortraitConverterService.convertToPortrait(
+                        finalVideoPath,
+                        portraitVideoTargetPath,
+                        cropBox
+                    );
+                }
+
+                await PortraitConverterService.assertValidVideo(portraitVideoTargetPath);
+                finalOutputPath = portraitVideoTargetPath;
+            }
+        } catch (err) {
+            log.warn({ err }, '[📱 Portrait] Conversion failed, using original video');
+        }
+
+        const requestedFilters = this.getValidRequestedFilters(customization);
+        if (requestedFilters.length > 0) {
+            const filteredOutputPath = path.join(projectResultDir, 'final_video_filtered.mp4');
+            log.info({ requestedFilters }, '[FILTER] Applying requested final video filters');
+            finalOutputPath = await FFmpegService.applyNamedFilters(
+                finalOutputPath,
+                filteredOutputPath,
+                requestedFilters
+            );
+        }
+
+        log.info('[TASK] Generating thumbnail...');
+        const thumbnailPath = path.join(projectResultDir, 'thumbnail.jpg');
+        try {
+            await FFmpegService.generateThumbnail(finalOutputPath, thumbnailPath, 1);
+        } catch (err) {
+            log.warn({ err: (err as any).message }, 'Thumbnail generation failed, skipping');
+        }
+
+        log.info({ jobId }, '[SUCCESS] Clip generation complete');
+
+        const actualOutputDuration = await FFmpegService.getDurationSeconds(finalOutputPath)
+            .catch(() => highlightsToProcess.reduce((sum, seg) => sum + (seg.end - seg.start), 0));
+
+        const analysisMarkdown = fs.existsSync(reportPath)
+            ? fs.readFileSync(reportPath, 'utf8')
+            : '# Analysis\n\nAnalysis file was not generated.';
+        const selectionSummary = this.buildSelectionSummary(
+            videoInfo.title,
+            selectedCandidates,
+            highlightsToProcess
+        );
+
+        JobManager.updateJob(jobId, {
+            status: 'generating_metadata',
+            progress: 90,
+            stage: 'generating_metadata',
+            message: 'Generating posting title, caption, and hashtags...'
+        });
+
+        const publishMetadata = await AIAnalyzer.generatePublishMetadata(
+            videoInfo.title,
+            analysisMarkdown,
+            selectionSummary,
+            customization
+        );
+        const captionWithHashtags = [publishMetadata.caption, publishMetadata.hashtags.join(' ')]
+            .filter(Boolean)
+            .join('\n\n')
+            .trim();
+
+        JobManager.updateJob(jobId, {
+            status: 'uploading_artifacts',
+            progress: 94,
+            stage: 'uploading_artifacts',
+            message: 'Uploading video and analysis artifacts to R2...'
+        });
+
+        const videoUrl = await S3Service.uploadFile(
+            finalOutputPath,
+            this.buildUploadPath(jobId, path.basename(finalOutputPath))
+        );
+        const analysisUrl = await S3Service.uploadFile(
+            reportPath,
+            this.buildUploadPath(jobId, path.basename(reportPath))
+        );
+        const thumbnailUrl = fs.existsSync(thumbnailPath)
+            ? await S3Service.uploadFile(
+                thumbnailPath,
+                this.buildUploadPath(jobId, path.basename(thumbnailPath))
+            )
+            : undefined;
+
+        JobManager.updateJob(jobId, {
+            status: 'finalizing',
+            progress: 98,
+            stage: 'finalizing',
+            message: 'Finalizing job output and cleanup...'
+        });
+
+        const result: ClipResult = {
+            jobId,
+            videoUrl,
+            analysisUrl,
+            thumbnailUrl,
+            postingTitle: publishMetadata.postingTitle,
+            caption: publishMetadata.caption,
+            captionWithHashtags,
+            hashtags: publishMetadata.hashtags,
+            duration: Number(actualOutputDuration.toFixed(3)),
+            metadata: {
+                sourceTitle: videoInfo.title,
+                highlights: cutSegments.length
+            }
+        };
+
+        const cleanup = {
+            tempDirRemoved: this.cleanupDirectory(workDir, ENV.CLEANUP_TEMP_FILES, 'workdir'),
+            discoveryDirRemoved: this.cleanupDirectory(
+                path.join(ENV.TEMP_DIR, `${jobId}-discovery`),
+                ENV.CLEANUP_TEMP_FILES,
+                'discovery'
+            ),
+            resultDirRemoved: this.cleanupDirectory(projectResultDir, ENV.CLEANUP_RESULT_FILES, 'result')
+        };
+
+        await JobManager.updateJob(jobId, {
+            status: 'completed',
+            progress: 100,
+            stage: 'completed',
+            message: 'Video processing completed successfully',
+            result,
+            artifacts: {
+                videoUrl: result.videoUrl,
+                analysisUrl: result.analysisUrl,
+                thumbnailUrl: result.thumbnailUrl,
+                portraitDecisionPath,
+                cleanup,
+                renderPlanPath: this.getRenderPlanPath(jobId)
+            }
+        });
+
+        return result;
+    }
+
     static async processYouTubeToClip(
         youtubeUrl: string,
         jobId: string,
