@@ -28,10 +28,13 @@ clipper/
 
 ## Docker Setup
 
-1. Copy `.env.example` to `.env`.
-2. Fill in valid AI, Whisper, and Cloudflare R2 credentials.
-3. Run `./install.sh` on Linux/macOS or use `docker compose build` then `docker compose up -d redis api worker webhooks`.
-4. Check `http://localhost:8080/health`.
+1. Jalankan `chmod +x install.sh && ./install.sh`.
+2. Jika `.env` belum ada, installer akan membuatnya dari `.env.example`.
+3. Installer akan meminta nilai env penting yang masih placeholder, lalu generate `API_BEARER_TOKEN` otomatis.
+4. Installer akan build container, start stack, dan menunggu API siap.
+5. Cek `http://localhost:8080/health`.
+
+Jika Anda ingin mode non-interaktif, siapkan `.env` lengkap lebih dulu lalu jalankan `./install.sh`.
 
 ### Cloudflared Tunnel
 

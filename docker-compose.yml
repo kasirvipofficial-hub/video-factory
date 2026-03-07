@@ -2,12 +2,19 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
     ports:
       - "6379:6379"
     volumes:
       - redis-data:/data
 
   api:
+    init: true
     build:
       context: .
       dockerfile: Dockerfile
@@ -15,18 +22,30 @@ services:
     env_file:
       - .env
     environment:
+      REQUIRE_COMPLETE_ENV: "true"
       REDIS_URL: redis://redis:6379
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     command: ["node", "dist/index.js"]
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./temp:/app/temp
       - ./results:/app/results
       - ./output:/app/output
+      - ./assets/fonts:/app/assets/fonts:ro
+      - ./assets/music:/app/assets/music
+      - ./cookies.txt:/app/cookies.txt:ro
 
   worker:
+    init: true
     build:
       context: .
       dockerfile: Dockerfile
@@ -34,16 +53,24 @@ services:
     env_file:
       - .env
     environment:
+      REQUIRE_COMPLETE_ENV: "true"
       REDIS_URL: redis://redis:6379
     command: ["node", "dist/workers/clip.worker.js"]
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
     volumes:
       - ./temp:/app/temp
       - ./results:/app/results
       - ./output:/app/output
+      - ./assets/fonts:/app/assets/fonts:ro
+      - ./assets/music:/app/assets/music
+      - ./cookies.txt:/app/cookies.txt:ro
 
   webhooks:
+    init: true
     build:
       context: .
       dockerfile: Dockerfile
@@ -51,10 +78,14 @@ services:
     env_file:
       - .env
     environment:
+      REQUIRE_COMPLETE_ENV: "true"
       REDIS_URL: redis://redis:6379
     command: ["node", "dist/workers/webhook.worker.js"]
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
 
 volumes:
   redis-data:

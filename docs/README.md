@@ -15,10 +15,16 @@ Clipper adalah service HTTP API + worker untuk memproses video YouTube menjadi s
 ## Quick Start
 
 ```bash
-cp .env.example .env
-docker compose build
-docker compose up -d redis api worker webhooks
+chmod +x install.sh
+./install.sh
 ```
+
+`install.sh` akan:
+- membuat `.env` dari `.env.example` bila belum ada
+- mengisi `API_BEARER_TOKEN` otomatis
+- meminta nilai env penting bila masih placeholder
+- membuat folder runtime dan `cookies.txt`
+- build image dan menunggu stack siap dipakai
 
 Health check:
 
@@ -109,8 +115,6 @@ Ambil hasil final melalui `GET /api/v1/jobs/:jobId/output`.
 
 - Node.js 18+ untuk mode non-container
 - Docker + Docker Compose untuk deployment yang direkomendasikan
-- FFmpeg
-- yt-dlp
 - kredensial AI, Whisper, dan Cloudflare R2 yang valid di `.env`
 
 ## Catatan Readiness

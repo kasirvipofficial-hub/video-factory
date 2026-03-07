@@ -24,7 +24,10 @@ COPY assets ./assets
 COPY yolov8n.pt ./yolov8n.pt
 COPY .env.example ./.env.example
 
+RUN chmod +x /app/scripts/docker-entrypoint.sh
+
 RUN npm run build \
     && mkdir -p /app/temp /app/results /app/output /app/assets/music /app/assets/fonts
 
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 CMD ["node", "dist/index.js"]
