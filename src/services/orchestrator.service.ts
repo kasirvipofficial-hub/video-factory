@@ -154,10 +154,46 @@ export class Orchestrator {
         return matches[0];
     }
 
+    private static isReusableSourceVideo(filePath: string): boolean {
+        const fileName = path.basename(filePath).toLowerCase();
+
+        if (!fileName.endsWith('.mp4')) {
+            return false;
+        }
+
+        if (
+            fileName === 'concat.mp4'
+            || fileName.startsWith('final_video')
+            || fileName.startsWith('segment_')
+            || fileName.includes('_tts_')
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static findReusableSourceVideo(dirPath: string): string | undefined {
+        if (!fs.existsSync(dirPath)) {
+            return undefined;
+        }
+
+        const matches = fs.readdirSync(dirPath)
+            .filter((fileName) => this.isReusableSourceVideo(path.join(dirPath, fileName)))
+            .map((fileName) => path.join(dirPath, fileName));
+
+        if (matches.length === 0) {
+            return undefined;
+        }
+
+        matches.sort((left, right) => fs.statSync(right).size - fs.statSync(left).size);
+        return matches[0];
+    }
+
     private static async resolveSourceVideo(jobId: string, youtubeUrl: string, workDir: string): Promise<{ filePath: string; info: VideoInfo }> {
         const reusablePaths = [
-            this.findFirstFileByExtension(workDir, '.mp4'),
-            this.findFirstFileByExtension(path.join(ENV.TEMP_DIR, `${jobId}-discovery`), '.mp4')
+            this.findReusableSourceVideo(path.join(ENV.TEMP_DIR, `${jobId}-discovery`)),
+            this.findReusableSourceVideo(workDir)
         ].filter((value): value is string => Boolean(value));
 
         if (reusablePaths.length > 0) {

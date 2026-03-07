@@ -290,17 +290,22 @@ export class JobManager {
         return job;
     }
 
-    static async getJob(jobId: string): Promise<JobState | undefined> {
+    private static async getJobRaw(jobId: string): Promise<JobState | undefined> {
         await ensureRedisConnected();
         const raw = await redis.get(this.keyJob(jobId));
         if (!raw) return undefined;
-        const job = this.normalizeJob(JSON.parse(raw));
+        return this.normalizeJob(JSON.parse(raw));
+    }
+
+    static async getJob(jobId: string): Promise<JobState | undefined> {
+        const job = await this.getJobRaw(jobId);
+        if (!job) return undefined;
         return this.recoverInterruptedJob(job);
     }
 
     static async updateJob(jobId: string, updates: Partial<JobState>): Promise<JobState | undefined> {
         await ensureRedisConnected();
-        const job = await this.getJob(jobId);
+        const job = await this.getJobRaw(jobId);
         if (!job) return undefined;
 
         const normalizedUpdates: Partial<JobState> = {
