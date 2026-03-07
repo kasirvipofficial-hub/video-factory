@@ -26,7 +26,7 @@ Checklist ini ditujukan untuk release operasional, bukan sekadar commit source c
 - [ ] Redis berjalan dan bisa diakses oleh API/worker
 - [ ] FFmpeg tersedia di runtime
 - [ ] `yt-dlp` tersedia di runtime
-- [ ] Jika memakai YOLO, Python dependency detector sudah terpasang
+- [ ] Jika memakai YOLO, Python dependency detector sudah terpasang secara eksplisit karena tidak ikut default image build
 
 ## Container Validation
 

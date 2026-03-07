@@ -59,6 +59,8 @@ YOLO_PYTHON_PATH=.venv\Scripts\python.exe
 
 Saran paling aman: satu container yang berisi Node, Python, dan ffmpeg.
 
+Catatan: image Docker default repo ini tidak meng-install dependency YOLO saat build standar. Ini disengaja agar deployment default tetap ringan dan cepat dengan backend `heuristic`.
+
 Paket dasar yang dibutuhkan:
 - python3
 - python3-pip
@@ -70,6 +72,8 @@ Install dependency detector saat build image:
 ```bash
 pip install --no-cache-dir -r scripts/requirements-yolo.txt
 ```
+
+Jika ingin mengaktifkan YOLO di container production, install dependency tersebut secara eksplisit pada image turunan atau provisioning tambahan sebelum mengubah `FACE_DETECTOR_BACKEND=yolov8n`.
 
 Atur env container:
 

@@ -13,10 +13,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
-COPY scripts/requirements-yolo.txt ./scripts/requirements-yolo.txt
 
 RUN npm ci \
-    && pip3 install --break-system-packages --no-cache-dir -r ./scripts/requirements-yolo.txt \
     && pip3 install --break-system-packages --no-cache-dir yt-dlp
 
 COPY tsconfig.json ./
