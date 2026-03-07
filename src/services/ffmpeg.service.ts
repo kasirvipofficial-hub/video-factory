@@ -297,7 +297,11 @@ export class FFmpegService {
                 .input(videoPath)
                 .input(audioPath)
                 .output(outputPath)
-                .audioFilter(`[0:a][1:a]amerge=inputs=2[a];[a]volume=${audioVolume}`)
+                .complexFilter([
+                    `[1:a]volume=${audioVolume}[tts]`,
+                    '[0:a][tts]amix=inputs=2:duration=first:dropout_transition=2[aout]'
+                ])
+                .outputOptions(['-map 0:v:0', '-map [aout]'])
                 .videoCodec('copy')
                 .audioCodec('aac')
                 .on('end', () => {
