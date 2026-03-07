@@ -1596,7 +1596,8 @@ export class Orchestrator {
                     // Generate portrait-specific karaoke subtitle with per-word highlighting
                     log.info('[TASK] Generating karaoke subtitle for portrait format...');
                     portraitAssPath = path.join(projectResultDir, 'subtitles_portrait_karaoke.ass');
-                    const portraitResolution = '1080x1920'; // Standard portrait resolution
+                    const portraitDimensions = PortraitConverterService.getPortraitOutputDimensions();
+                    const portraitResolution = `${portraitDimensions.width}x${portraitDimensions.height}`;
                     
                     const portraitSubtitleOptions = this.buildSubtitleOptions(options.customization, {
                         stylePreset: 'karaoke_yellow',
@@ -1624,8 +1625,8 @@ export class Orchestrator {
                                 finalVideoPath,
                                 portraitWithSubtitlesPath,
                                 cropBox,
-                                1080,
-                                1920,
+                                portraitDimensions.width,
+                                portraitDimensions.height,
                                 portraitAssPath
                             );
                         } else {
@@ -1654,8 +1655,8 @@ export class Orchestrator {
                                 finalVideoPath,
                                 portraitVideoTargetPath,
                                 cropBox,
-                                1080,
-                                1920
+                                portraitDimensions.width,
+                                portraitDimensions.height
                             );
                         } else {
                             await PortraitConverterService.convertToPortrait(
@@ -1708,6 +1709,14 @@ export class Orchestrator {
                 options.selectedCandidates,
                 highlightsToProcess
             );
+
+            JobManager.updateJob(jobId, {
+                status: 'generating_metadata',
+                progress: 90,
+                stage: 'generating_metadata',
+                message: 'Generating posting title, caption, and hashtags...'
+            });
+
             const publishMetadata = await AIAnalyzer.generatePublishMetadata(
                 videoInfo.title,
                 analysisMarkdown,
@@ -1718,6 +1727,13 @@ export class Orchestrator {
                 .filter(Boolean)
                 .join('\n\n')
                 .trim();
+
+            JobManager.updateJob(jobId, {
+                status: 'uploading_artifacts',
+                progress: 94,
+                stage: 'uploading_artifacts',
+                message: 'Uploading video and analysis artifacts to R2...'
+            });
 
             const videoUrl = await S3Service.uploadFile(
                 finalOutputPath,
@@ -1733,6 +1749,13 @@ export class Orchestrator {
                     this.buildUploadPath(jobId, path.basename(thumbnailPath))
                 )
                 : undefined;
+
+            JobManager.updateJob(jobId, {
+                status: 'finalizing',
+                progress: 98,
+                stage: 'finalizing',
+                message: 'Finalizing job output and cleanup...'
+            });
 
             const result: ClipResult = {
                 jobId,

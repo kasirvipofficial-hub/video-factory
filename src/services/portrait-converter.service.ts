@@ -52,6 +52,16 @@ export interface PortraitRenderPlan {
 }
 
 export class PortraitConverterService {
+  static getPortraitOutputDimensions(): { width: number; height: number } {
+    const width = Math.max(540, ENV.PORTRAIT_OUTPUT_WIDTH || 1080);
+    const height = Math.max(960, ENV.PORTRAIT_OUTPUT_HEIGHT || 1920);
+
+    return {
+      width: width % 2 === 0 ? width : width - 1,
+      height: height % 2 === 0 ? height : height - 1,
+    };
+  }
+
   private static clamp(value: number, min: number, max: number): number {
     return Math.min(Math.max(value, min), max);
   }
@@ -356,9 +366,7 @@ export class PortraitConverterService {
   ): { width: number; height: number } {
     switch (format) {
       case 'portrait':
-        // 9:16 aspect ratio - common for TikTok/Instagram/Reels
-        // Common resolutions: 1080x1920, 720x1280, 540x960
-        return { width: 1080, height: 1920 };
+        return this.getPortraitOutputDimensions();
       
       case 'square':
         // 1:1 aspect ratio
@@ -385,11 +393,11 @@ export class PortraitConverterService {
         const { promisify } = await import('util');
         const execAsync = promisify(exec);
         
-        const ffmpegCmd = `"${ENV.FFMPEG_PATH}" -i "${inputPath}" -vf "${filterComplex}" -c:v libx264 -crf 20 -preset veryfast -movflags +faststart -c:a copy -y "${outputPath}"`;
+        const ffmpegCmd = `"${ENV.FFMPEG_PATH}" -i "${inputPath}" -vf "${filterComplex}" -c:v libx264 -crf ${ENV.PORTRAIT_VIDEO_CRF} -preset ${ENV.PORTRAIT_VIDEO_PRESET} -movflags +faststart -c:a copy -y "${outputPath}"`;
         
         log.debug({ cmd: ffmpegCmd }, '[📱 PortraitConverter] Executing FFmpeg');
         
-        const { stdout, stderr } = await execAsync(ffmpegCmd, { maxBuffer: 10 * 1024 * 1024, timeout: 600000 });
+        const { stdout, stderr } = await execAsync(ffmpegCmd, { maxBuffer: 10 * 1024 * 1024, timeout: ENV.PORTRAIT_RENDER_TIMEOUT_MS });
         
         log.debug('[📱 PortraitConverter] FFmpeg execution complete');
         resolve();
@@ -408,14 +416,18 @@ export class PortraitConverterService {
     inputPath: string,
     outputPath: string,
     subjectCropBox: { x: number; y: number; width: number; height: number },
-    targetWidth: number = 1080,
-    targetHeight: number = 1920,
+    targetWidth?: number,
+    targetHeight?: number,
     subtitlePath?: string
   ): Promise<void> {
     return new Promise(async (resolve, reject) => {
       try {
+        const portraitDimensions = this.getPortraitOutputDimensions();
+        const resolvedTargetWidth = targetWidth || portraitDimensions.width;
+        const resolvedTargetHeight = targetHeight || portraitDimensions.height;
+
         log.info(
-          { targetWidth, targetHeight, aspect: (targetWidth / targetHeight).toFixed(4) },
+          { targetWidth: resolvedTargetWidth, targetHeight: resolvedTargetHeight, aspect: (resolvedTargetWidth / resolvedTargetHeight).toFixed(4) },
           '[📱 PortraitConverter] Convert with blur background fallback'
         );
 
@@ -425,20 +437,20 @@ export class PortraitConverterService {
         const inputDimensions = await this.getVideoDimensions(inputPath);
         const renderPlan = this.planPortraitRender(inputDimensions, subjectCropBox);
         const foregroundBox = renderPlan.safeSubjectBox;
-        const overlayY = Math.round(targetHeight * 0.08);
+        const overlayY = Math.round(resolvedTargetHeight * 0.08);
 
         const subtitleFilter = subtitlePath ? this.buildSubtitleFilter(subtitlePath) : '';
         const filterComplex = subtitleFilter
-          ? `[0:v]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},boxblur=12:4[bg];` +
-            `[0:v]crop=${foregroundBox.width}:${foregroundBox.height}:${foregroundBox.x}:${foregroundBox.y},scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease[fg];` +
+          ? `[0:v]scale=${resolvedTargetWidth}:${resolvedTargetHeight}:force_original_aspect_ratio=increase,crop=${resolvedTargetWidth}:${resolvedTargetHeight},boxblur=12:4[bg];` +
+            `[0:v]crop=${foregroundBox.width}:${foregroundBox.height}:${foregroundBox.x}:${foregroundBox.y},scale=${resolvedTargetWidth}:${resolvedTargetHeight}:force_original_aspect_ratio=decrease[fg];` +
             `[bg][fg]overlay=(W-w)/2:${overlayY}[pre];` +
             `[pre]${subtitleFilter},setsar=1[out]`
-          : `[0:v]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},boxblur=12:4[bg];` +
-            `[0:v]crop=${foregroundBox.width}:${foregroundBox.height}:${foregroundBox.x}:${foregroundBox.y},scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease[fg];` +
+          : `[0:v]scale=${resolvedTargetWidth}:${resolvedTargetHeight}:force_original_aspect_ratio=increase,crop=${resolvedTargetWidth}:${resolvedTargetHeight},boxblur=12:4[bg];` +
+            `[0:v]crop=${foregroundBox.width}:${foregroundBox.height}:${foregroundBox.x}:${foregroundBox.y},scale=${resolvedTargetWidth}:${resolvedTargetHeight}:force_original_aspect_ratio=decrease[fg];` +
             `[bg][fg]overlay=(W-w)/2:${overlayY},setsar=1[out]`;
 
         const ffmpegCmd =
-          `"${ENV.FFMPEG_PATH}" -i "${inputPath}" -filter_complex "${filterComplex}" -map "[out]" -map "0:a?" -c:v libx264 -crf 20 -preset veryfast -movflags +faststart -c:a copy -y "${outputPath}"`;
+          `"${ENV.FFMPEG_PATH}" -i "${inputPath}" -filter_complex "${filterComplex}" -map "[out]" -map "0:a?" -c:v libx264 -crf ${ENV.PORTRAIT_VIDEO_CRF} -preset ${ENV.PORTRAIT_VIDEO_PRESET} -movflags +faststart -c:a copy -y "${outputPath}"`;
 
         log.info(
           { foregroundBox, portraitWindow: renderPlan.portraitWindow, reasons: renderPlan.reasons },
@@ -448,7 +460,7 @@ export class PortraitConverterService {
 
         const { stdout, stderr } = await execAsync(ffmpegCmd, {
           maxBuffer: 10 * 1024 * 1024,
-          timeout: 600000
+          timeout: ENV.PORTRAIT_RENDER_TIMEOUT_MS
         });
 
         log.info('[📱 PortraitConverter] Blur fallback complete');

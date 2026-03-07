@@ -7,6 +7,14 @@ import { Orchestrator } from '../services/orchestrator.service';
 import { YouTubeService } from '../services/youtube.service';
 import { log } from '../utils/logger';
 
+process.on('unhandledRejection', (reason) => {
+    log.error({ reason }, '[WORKER] Unhandled Promise Rejection');
+});
+
+process.on('uncaughtException', (error) => {
+    log.error({ err: error }, '[WORKER] Uncaught Exception');
+});
+
 function resolveSelection(
     candidates: TopicCandidate[],
     selection: string[] | 'all' | 'top1' | 'auto_best' | undefined,
@@ -232,6 +240,11 @@ async function processSelectionTimeout(payload: SelectionTimeoutPayload): Promis
 async function startWorker(): Promise<void> {
     await ensureRedisConnected();
     wireRedisLogging();
+
+    const recoveredJobs = await JobManager.recoverInterruptedJobs();
+    if (recoveredJobs > 0) {
+        log.warn({ recoveredJobs }, '[WORKER] Requeued interrupted jobs during startup');
+    }
 
     const clipWorker = new Worker(
         ENV.CLIP_QUEUE_NAME,

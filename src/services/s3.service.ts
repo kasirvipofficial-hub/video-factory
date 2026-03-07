@@ -1,10 +1,26 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import fs from 'fs';
-import path from 'path';
 import { log } from '../utils/logger';
 import { ENV } from '../config/env';
 
 export class S3Service {
+    private static async withTimeout<T>(promise: Promise<T>, timeoutMs: number, description: string): Promise<T> {
+        let timeoutHandle: NodeJS.Timeout | undefined;
+
+        try {
+            return await Promise.race([
+                promise,
+                new Promise<T>((_, reject) => {
+                    timeoutHandle = setTimeout(() => reject(new Error(`${description} timed out after ${timeoutMs}ms`)), timeoutMs);
+                })
+            ]);
+        } finally {
+            if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+            }
+        }
+    }
+
     private static assertConfigured(): void {
         const required = ['S3_ENDPOINT', 'S3_BUCKET', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'S3_PUBLIC_URL'] as const;
         const missing = required.filter((key) => !ENV[key]);
@@ -36,36 +52,49 @@ export class S3Service {
     static async uploadFile(localFilePath: string, destPath: string): Promise<string> {
         log.info({ localFilePath, destPath }, '[S3] Starting file upload');
 
-        try {
-            const client = this.getClient();
+        const client = this.getClient();
+
+        // Basic content type detection based on extension
+        let contentType = 'application/octet-stream';
+        if (destPath.endsWith('.mp4')) contentType = 'video/mp4';
+        else if (destPath.endsWith('.mp3')) contentType = 'audio/mpeg';
+        else if (destPath.endsWith('.jpg') || destPath.endsWith('.jpeg')) contentType = 'image/jpeg';
+        else if (destPath.endsWith('.png')) contentType = 'image/png';
+        else if (destPath.endsWith('.json')) contentType = 'application/json';
+        else if (destPath.endsWith('.md')) contentType = 'text/markdown; charset=utf-8';
+        else if (destPath.endsWith('.ass') || destPath.endsWith('.srt')) contentType = 'text/plain; charset=utf-8';
+
+        const maxAttempts = Math.max(1, ENV.S3_UPLOAD_MAX_RETRIES);
+        let lastError: Error | undefined;
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             const fileStream = fs.createReadStream(localFilePath);
 
-            // Basic content type detection based on extension
-            let contentType = 'application/octet-stream';
-            if (destPath.endsWith('.mp4')) contentType = 'video/mp4';
-            else if (destPath.endsWith('.mp3')) contentType = 'audio/mpeg';
-            else if (destPath.endsWith('.jpg') || destPath.endsWith('.jpeg')) contentType = 'image/jpeg';
-            else if (destPath.endsWith('.png')) contentType = 'image/png';
-            else if (destPath.endsWith('.json')) contentType = 'application/json';
-            else if (destPath.endsWith('.md')) contentType = 'text/markdown; charset=utf-8';
-            else if (destPath.endsWith('.ass') || destPath.endsWith('.srt')) contentType = 'text/plain; charset=utf-8';
+            try {
+                const command = new PutObjectCommand({
+                    Bucket: ENV.S3_BUCKET,
+                    Key: destPath,
+                    Body: fileStream,
+                    ContentType: contentType,
+                });
 
-            const command = new PutObjectCommand({
-                Bucket: ENV.S3_BUCKET,
-                Key: destPath,
-                Body: fileStream,
-                ContentType: contentType,
-            });
+                await this.withTimeout(
+                    client.send(command),
+                    ENV.S3_UPLOAD_TIMEOUT_MS,
+                    `S3 upload for ${destPath}`
+                );
 
-            await client.send(command);
-
-            const publicUrl = `${ENV.S3_PUBLIC_URL}/${destPath}`;
-            log.info({ publicUrl }, '[SUCCESS] File uploaded to S3');
-            return publicUrl;
-
-        } catch (error: any) {
-            log.error({ err: error.message, destPath }, '[ERROR] S3 upload failed');
-            throw error;
+                const publicUrl = `${ENV.S3_PUBLIC_URL}/${destPath}`;
+                log.info({ publicUrl, destPath, attempt }, '[SUCCESS] File uploaded to S3');
+                return publicUrl;
+            } catch (error: any) {
+                lastError = error instanceof Error ? error : new Error(String(error));
+                log.warn({ err: lastError.message, destPath, attempt, maxAttempts }, '[S3] Upload attempt failed');
+                fileStream.destroy();
+            }
         }
+
+        log.error({ err: lastError?.message, destPath, maxAttempts }, '[ERROR] S3 upload failed');
+        throw lastError || new Error(`S3 upload failed for ${destPath}`);
     }
 }

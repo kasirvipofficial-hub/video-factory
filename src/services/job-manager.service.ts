@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { ENV } from '../config/env';
 import { ensureRedisConnected, redis } from '../queue/connection';
-import { ClipCustomization, enqueueWebhookEvent, JobWebhookConfig } from '../queue/queues';
+import { ClipCustomization, ClipJobPayload, clipQueue, enqueueClipJob, enqueueWebhookEvent, JobWebhookConfig } from '../queue/queues';
 import { log } from '../utils/logger';
 
 export type JobStatus =
@@ -15,6 +15,9 @@ export type JobStatus =
     | 'cutting'
     | 'analyzing_faces'
     | 'converting_format'
+    | 'generating_metadata'
+    | 'uploading_artifacts'
+    | 'finalizing'
     | 'rendering'
     | 'completed'
     | 'failed';
@@ -80,6 +83,155 @@ export class JobManager {
         return `${ENV.REDIS_PREFIX}:job:selection-timeout:${jobId}`;
     }
 
+    private static isStale(job: JobState): boolean {
+        const updatedAt = new Date(job.updatedAt).getTime();
+        if (!Number.isFinite(updatedAt)) {
+            return false;
+        }
+
+        return Date.now() - updatedAt >= ENV.JOB_STALE_AFTER_MS;
+    }
+
+    private static async hasQueuedClipWork(jobId: string): Promise<boolean> {
+        const jobs = await clipQueue.getJobs(['active', 'waiting', 'delayed', 'prioritized', 'paused', 'waiting-children']);
+        const now = Date.now();
+
+        return jobs.some((queueJob) => {
+            const payload = queueJob.data as ClipJobPayload | undefined;
+            if (payload?.jobId !== jobId) {
+                return false;
+            }
+
+            if (queueJob.processedOn && now - queueJob.processedOn >= ENV.JOB_STALE_AFTER_MS) {
+                log.warn(
+                    { jobId, queueJobId: queueJob.id, processedOn: queueJob.processedOn },
+                    '[RECOVERY] Ignoring stale active BullMQ entry during recovery check'
+                );
+                return false;
+            }
+
+            return true;
+        });
+    }
+
+    private static buildRecoveryPayload(job: JobState): ClipJobPayload | undefined {
+        if (!job.sourceUrl) {
+            return undefined;
+        }
+
+        if (job.status === 'awaiting_selection' && job.selectionPolicy === 'wait_user') {
+            return undefined;
+        }
+
+        const lateStageStatuses: JobStatus[] = [
+            'cutting',
+            'analyzing_faces',
+            'converting_format',
+            'rendering',
+            'generating_metadata',
+            'uploading_artifacts',
+            'finalizing'
+        ];
+
+        if (lateStageStatuses.includes(job.status) && job.topicCandidates.length > 0) {
+            const fallbackSelection = job.selection
+                ?? (job.selectionPolicy === 'auto_best'
+                    ? 'auto_best'
+                    : job.selectionPolicy === 'top1'
+                        ? 'top1'
+                        : job.selectionPolicy === 'all'
+                            ? 'all'
+                            : undefined);
+
+            if (!fallbackSelection && job.selectionPolicy === 'wait_user') {
+                return undefined;
+            }
+
+            return {
+                jobId: job.jobId,
+                tenantId: job.tenantId,
+                youtubeUrl: job.sourceUrl,
+                mode: 'produce',
+                selectionPolicy: job.selectionPolicy,
+                selection: fallbackSelection,
+                customization: job.customization,
+                webhook: job.webhook,
+                triggerReason: 'recovery'
+            };
+        }
+
+        return {
+            jobId: job.jobId,
+            tenantId: job.tenantId,
+            youtubeUrl: job.sourceUrl,
+            mode: job.mode,
+            selectionPolicy: job.selectionPolicy,
+            selection: job.selection,
+            customization: job.customization,
+            webhook: job.webhook,
+            triggerReason: 'recovery'
+        };
+    }
+
+    static async recoverInterruptedJob(job: JobState): Promise<JobState> {
+        if (this.isTerminal(job.status) || !this.isStale(job)) {
+            return job;
+        }
+
+        if (await this.hasQueuedClipWork(job.jobId)) {
+            return job;
+        }
+
+        const payload = this.buildRecoveryPayload(job);
+        if (!payload) {
+            return job;
+        }
+
+        log.warn({ jobId: job.jobId, status: job.status, updatedAt: job.updatedAt }, '[RECOVERY] Recovering interrupted job');
+
+        const recovered = await this.updateJob(job.jobId, {
+            status: 'queued',
+            progress: Math.min(job.progress, 5),
+            stage: 'queued',
+            message: 'Recovered after worker interruption; requeued for processing.'
+        });
+
+        await enqueueClipJob(payload);
+        return recovered || job;
+    }
+
+    static async recoverInterruptedJobs(): Promise<number> {
+        await ensureRedisConnected();
+        const keys = await redis.keys(this.keyJob('*'));
+        let recoveredCount = 0;
+
+        for (const key of keys) {
+            const raw = await redis.get(key);
+            if (!raw || !raw.trim().startsWith('{')) {
+                continue;
+            }
+
+            let job: JobState;
+            try {
+                const parsed = JSON.parse(raw);
+                if (!parsed || typeof parsed !== 'object' || !('jobId' in parsed) || !('status' in parsed)) {
+                    continue;
+                }
+                job = this.normalizeJob(parsed);
+            } catch {
+                continue;
+            }
+
+            const before = job.updatedAt;
+            const recovered = await this.recoverInterruptedJob(job);
+            if (recovered.updatedAt !== before && recovered.status === 'queued') {
+                recoveredCount += 1;
+            }
+        }
+
+        return recoveredCount;
+    }
+
     private static normalizeJob(raw: unknown): JobState {
         const data = raw as any;
         return {
@@ -142,7 +294,8 @@ export class JobManager {
         await ensureRedisConnected();
         const raw = await redis.get(this.keyJob(jobId));
         if (!raw) return undefined;
-        return this.normalizeJob(JSON.parse(raw));
+        const job = this.normalizeJob(JSON.parse(raw));
+        return this.recoverInterruptedJob(job);
     }
 
     static async updateJob(jobId: string, updates: Partial<JobState>): Promise<JobState | undefined> {

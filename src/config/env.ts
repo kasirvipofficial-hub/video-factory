@@ -36,6 +36,11 @@ export const ENV = {
 
     // FFmpeg
     FFMPEG_PATH: optional('FFMPEG_PATH', 'ffmpeg'),
+    PORTRAIT_OUTPUT_WIDTH: optionalInt('PORTRAIT_OUTPUT_WIDTH', '1080'),
+    PORTRAIT_OUTPUT_HEIGHT: optionalInt('PORTRAIT_OUTPUT_HEIGHT', '1920'),
+    PORTRAIT_VIDEO_PRESET: optional('PORTRAIT_VIDEO_PRESET', 'veryfast'),
+    PORTRAIT_VIDEO_CRF: optionalInt('PORTRAIT_VIDEO_CRF', '20'),
+    PORTRAIT_RENDER_TIMEOUT_MS: optionalInt('PORTRAIT_RENDER_TIMEOUT_MS', '600000'),
 
     // Face / Person Detection
     FACE_DETECTOR_BACKEND: optional('FACE_DETECTOR_BACKEND', 'heuristic'),
@@ -94,6 +99,7 @@ export const ENV = {
     DEFAULT_TENANT_ID: optional('DEFAULT_TENANT_ID', 'default'),
     AI_DATA_TIMEOUT_MS: parseInt(optional('AI_DATA_TIMEOUT_MS', '300000'), 10),
     AI_DIRECTOR_TIMEOUT_MS: parseInt(optional('AI_DIRECTOR_TIMEOUT_MS', '180000'), 10),
+    JOB_STALE_AFTER_MS: parseInt(optional('JOB_STALE_AFTER_MS', '900000'), 10),
 
     // Logging
     LOG_LEVEL: optional('LOG_LEVEL', 'info'),
@@ -106,4 +112,6 @@ export const ENV = {
     S3_PUBLIC_URL: optional('S3_PUBLIC_URL', ''),
     S3_REGION: optional('S3_REGION', 'auto'),
     S3_UPLOAD_PREFIX: optional('S3_UPLOAD_PREFIX', 'clipper'),
+    S3_UPLOAD_TIMEOUT_MS: parseInt(optional('S3_UPLOAD_TIMEOUT_MS', '180000'), 10),
+    S3_UPLOAD_MAX_RETRIES: parseInt(optional('S3_UPLOAD_MAX_RETRIES', '2'), 10),
 };

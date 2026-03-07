@@ -42,7 +42,7 @@ export interface ClipJobPayload {
     selection?: string[] | 'all' | 'top1' | 'auto_best';
     customization?: ClipCustomization;
     webhook?: JobWebhookConfig;
-    triggerReason?: 'initial' | 'selection' | 'timeout_fallback';
+    triggerReason?: 'initial' | 'selection' | 'timeout_fallback' | 'recovery';
 }
 
 export interface WebhookEventPayload {
