@@ -94,8 +94,11 @@ async function createJobFromRequest(
     const idempotencyKey = request.idempotencyKey;
 
     const youtubeUrl = request.youtubeUrl;
-    const mode = parseMode(request.mode);
     const selectionPolicy = parseSelectionPolicy(request.selectionPolicy);
+    const requestedMode = parseMode(request.mode);
+    const mode = requestedMode === 'discover_only' && selectionPolicy === 'auto_best'
+        ? 'auto'
+        : requestedMode;
     const customization = (request.customization || {}) as ClipCustomization;
     const webhook = request.webhook as any;
 

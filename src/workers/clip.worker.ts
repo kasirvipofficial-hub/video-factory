@@ -96,7 +96,7 @@ async function processClipJob(data: ClipJobPayload): Promise<Record<string, unkn
         const discovery = await Orchestrator.discoverTopics(data.youtubeUrl, data.jobId);
         const candidates = discovery.candidates;
 
-        const autoBestSelection = data.mode === 'auto' && job.selectionPolicy === 'auto_best' ? 'auto_best' : job.selection;
+        const autoBestSelection = job.selectionPolicy === 'auto_best' ? 'auto_best' : job.selection;
 
         await JobManager.updateJob(job.jobId, {
             status: 'awaiting_selection',
@@ -113,7 +113,7 @@ async function processClipJob(data: ClipJobPayload): Promise<Record<string, unkn
             selection: autoBestSelection
         });
 
-        if (data.mode === 'discover_only') {
+        if (data.mode === 'discover_only' && job.selectionPolicy !== 'auto_best') {
             return {
                 mode: 'discover_only',
                 status: 'awaiting_selection',

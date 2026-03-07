@@ -184,8 +184,13 @@ export class Orchestrator {
         const tailSeconds = Math.max(40, Math.round(targetWindowDuration - leadInSeconds));
 
         for (const peak of sortedPeaks) {
-            const start = Math.max(0, peak.timestamp - leadInSeconds);
-            const end = Math.min(videoDuration, peak.timestamp + tailSeconds);
+            const safePeak = Math.max(0, Math.min(videoDuration, peak.timestamp));
+            const start = Math.max(0, Math.min(videoDuration, safePeak - leadInSeconds));
+            const end = Math.min(videoDuration, Math.max(start + 12, safePeak + tailSeconds));
+
+            if (end <= start) {
+                continue;
+            }
 
             const overlaps = windows.some((w) => !(end <= w.start || start >= w.end));
             if (overlaps) continue;
