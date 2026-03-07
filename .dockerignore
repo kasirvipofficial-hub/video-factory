@@ -1,0 +1,10 @@
+node_modules
+dist
+temp
+results
+output
+.git
+.env
+.venv
+npm-debug.log
+docker-compose.override.yml

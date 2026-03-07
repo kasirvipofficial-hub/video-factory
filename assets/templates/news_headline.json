@@ -1,0 +1,19 @@
+{
+    "output_format": "landscape",
+    "visual": {
+        "color_grade": "bright"
+    },
+    "text": {
+        "style_preset": "modern_bold",
+        "animation_preset": "slide_up"
+    },
+    "audio": {
+        "music": {
+            "volume": 0.2
+        },
+        "voice": {
+            "duck_music": true,
+            "duck_level": 0.15
+        }
+    }
+}

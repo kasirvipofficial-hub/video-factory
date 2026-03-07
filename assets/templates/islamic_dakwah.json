@@ -1,0 +1,19 @@
+{
+    "output_format": "portrait",
+    "visual": {
+        "color_grade": "cold"
+    },
+    "text": {
+        "style_preset": "cinematic_serif",
+        "animation_preset": "fade"
+    },
+    "audio": {
+        "music": {
+            "volume": 0.1
+        },
+        "voice": {
+            "duck_music": true,
+            "duck_level": 0.08
+        }
+    }
+}

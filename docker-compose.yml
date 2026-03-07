@@ -1,0 +1,60 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/index.js"]
+    depends_on:
+      - redis
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./temp:/app/temp
+      - ./results:/app/results
+      - ./output:/app/output
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/workers/clip.worker.js"]
+    depends_on:
+      - redis
+    volumes:
+      - ./temp:/app/temp
+      - ./results:/app/results
+      - ./output:/app/output
+
+  webhooks:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/workers/webhook.worker.js"]
+    depends_on:
+      - redis
+
+volumes:
+  redis-data:
