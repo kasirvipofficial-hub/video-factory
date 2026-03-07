@@ -33,6 +33,12 @@ clipper/
 3. Run `./install.sh` on Linux/macOS or use `docker compose build` then `docker compose up -d redis api worker webhooks`.
 4. Check `http://localhost:8080/health`.
 
+### Cloudflared Tunnel
+
+Jika tunnel Cloudflare sudah berjalan di host yang sama, arahkan public hostname tunnel ke `http://localhost:8080`.
+
+Rekomendasi ini sengaja dipakai agar API tidak perlu dibuka ke internet lewat port publik VPS.
+
 ## API Input
 
 Request body for `POST /api/v1/jobs`:

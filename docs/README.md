@@ -26,6 +26,32 @@ Health check:
 curl http://localhost:8080/health
 ```
 
+## Cloudflared
+
+Jika Anda memakai Cloudflare Tunnel, service API cukup diekspos ke localhost host VPS. `docker-compose.yml` sudah diatur untuk bind API ke `127.0.0.1:8080`.
+
+Tambahkan public hostname di dashboard tunnel Cloudflare Anda dengan target service:
+
+```text
+Hostname: <subdomain-anda>
+Service: http://localhost:8080
+```
+
+Contoh ingress yang setara:
+
+```yaml
+ingress:
+  - hostname: clipper.example.com
+    service: http://localhost:8080
+  - service: http_status:404
+```
+
+Setelah hostname dibuat, uji endpoint publik dengan:
+
+```bash
+curl https://<subdomain-anda>/health
+```
+
 ## Request Example
 
 ```bash
