@@ -3,10 +3,6 @@ set -euo pipefail
 
 mkdir -p /app/temp /app/results /app/output /app/assets/music /app/assets/fonts
 
-if [ ! -f /app/cookies.txt ]; then
-  touch /app/cookies.txt
-fi
-
 is_placeholder_value() {
   local key="$1"
   local value="$2"
